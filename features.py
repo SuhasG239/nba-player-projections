@@ -5,6 +5,7 @@ the result it is trying to predict.
 """
 import glob
 import os
+import re
 import unicodedata
 
 import numpy as np
@@ -21,6 +22,16 @@ WINDOWS = [5, 10]
 TEAM_STATS = ['PACE', 'OFF_RATING', 'DEF_RATING', 'PTS_ALLOWED', 'REB_ALLOWED', 'AST_ALLOWED',
               'FG3A_ALLOWED']
 TEAM_WINDOW = 10
+
+# Players out. The game logs only list players who played, so a player counts as out
+# when he was in the team's rotation (played in at least MIN_APPEARANCES of the team's
+# previous ROTATION_WINDOW games this season, and not for another team since) but
+# didn't play. Each missing player adds his averages from those games.
+ROTATION_WINDOW = 10
+MIN_APPEARANCES = 2
+OUT_STATS = ['MIN', 'PTS', 'REB', 'AST', 'FGA']
+OUT_COLS = ['OUT_' + c for c in OUT_STATS] + ['OUT_ROTATION']   # OUT_ROTATION: players out averaging 20+ min
+OUT_RECENT = ['TEAM_OUT_MIN', 'TEAM_OUT_PTS', 'TEAM_OUT_AST', 'TEAM_OUT_FGA']
 
 
 def load_data(data_dir='data'):
@@ -61,6 +72,75 @@ def attach_team_form(df, form, team_col, prefix):
     df = df.sort_values('GAME_DATE')
     df = pd.merge_asof(df, renamed, on='GAME_DATE', by=team_col, allow_exact_matches=False)
     return df
+
+
+def team_schedule(teams):
+    """Each team's games numbered in order within a season (regular season and playoffs together)."""
+    s = teams[['TEAM_ID', 'TEAM_ABBREVIATION', 'SEASON_YEAR', 'GAME_ID', 'GAME_DATE']]
+    s = s.sort_values(['TEAM_ID', 'GAME_DATE', 'GAME_ID']).reset_index(drop=True)
+    s['TEAM_GAME_NO'] = s.groupby(['TEAM_ID', 'SEASON_YEAR']).cumcount()
+    return s
+
+
+def rotation_players(players, schedule, targets):
+    """The rotation going into each target game, with each player's averages over his recent games.
+
+    targets has TEAM_ID, SEASON_YEAR, TEAM_GAME_NO, GAME_ID, GAME_DATE (it can include a
+    game that hasn't been played yet). Only games before each target are used.
+    """
+    apps = players[['PLAYER_ID', 'TEAM_ID', 'GAME_ID'] + OUT_STATS].merge(
+        schedule[['TEAM_ID', 'GAME_ID', 'SEASON_YEAR', 'TEAM_GAME_NO']], on=['TEAM_ID', 'GAME_ID'])
+    apps = apps[apps['TEAM_ID'].isin(targets['TEAM_ID'].unique())].drop(columns='GAME_ID')
+    # Each appearance counts toward the team's next ROTATION_WINDOW games
+    expanded = pd.concat([apps.assign(TARGET_NO=apps['TEAM_GAME_NO'] + d)
+                          for d in range(1, ROTATION_WINDOW + 1)], ignore_index=True)
+    t = targets[['TEAM_ID', 'SEASON_YEAR', 'TEAM_GAME_NO', 'GAME_ID', 'GAME_DATE']].rename(
+        columns={'TEAM_GAME_NO': 'TARGET_NO'})
+    expanded = expanded.merge(t, on=['TEAM_ID', 'SEASON_YEAR', 'TARGET_NO'])
+
+    keys = ['TEAM_ID', 'GAME_ID', 'GAME_DATE', 'PLAYER_ID']
+    rot = expanded.groupby(keys)[OUT_STATS].mean()
+    rot['APPEARANCES'] = expanded.groupby(keys).size()
+    rot = rot[rot['APPEARANCES'] >= MIN_APPEARANCES].reset_index()
+
+    # Drop players who have since played for another team (trades, signings)
+    last_team = (players[['PLAYER_ID', 'GAME_DATE', 'TEAM_ID']]
+                 .rename(columns={'TEAM_ID': 'LAST_TEAM_ID'}).sort_values('GAME_DATE'))
+    rot = pd.merge_asof(rot.sort_values('GAME_DATE'), last_team, on='GAME_DATE', by='PLAYER_ID',
+                        allow_exact_matches=False)
+    rot = rot[rot['LAST_TEAM_ID'] == rot['TEAM_ID']].drop(columns='LAST_TEAM_ID')
+
+    names = players.drop_duplicates('PLAYER_ID', keep='last').set_index('PLAYER_ID')['PLAYER_NAME']
+    rot['PLAYER_NAME'] = rot['PLAYER_ID'].map(names)
+    return rot.reset_index(drop=True)
+
+
+def summarize_out(out, targets):
+    """Add up the players out for each target game (zero when nobody is out)."""
+    out = out.assign(ROTATION=(out['MIN'] >= 20).astype(int))
+    totals = out.groupby(['TEAM_ID', 'GAME_ID'])[OUT_STATS + ['ROTATION']].sum()
+    totals.columns = OUT_COLS
+    result = targets[['TEAM_ID', 'GAME_ID']].merge(totals.reset_index(), on=['TEAM_ID', 'GAME_ID'], how='left')
+    result[OUT_COLS] = result[OUT_COLS].fillna(0)
+    return result
+
+
+def absences(players, schedule, targets=None):
+    """For each played game: totals for the rotation players who didn't play."""
+    targets = schedule if targets is None else targets
+    rot = rotation_players(players, schedule, targets)
+    # A player who played that day (for any team) wasn't out
+    played = players[['PLAYER_ID', 'GAME_DATE']].drop_duplicates().assign(PLAYED=True)
+    rot = rot.merge(played, on=['PLAYER_ID', 'GAME_DATE'], how='left')
+    return summarize_out(rot[rot['PLAYED'].isna()], targets)
+
+
+def attach_absences(df, out):
+    """Add the player's own team's and the opponent's players-out totals."""
+    team = out.rename(columns={c: 'TEAM_' + c for c in OUT_COLS})
+    opp = out.rename(columns={'TEAM_ID': 'OPP_TEAM_ID', **{c: 'OPP_' + c for c in OUT_COLS}})
+    df = df.merge(team, on=['TEAM_ID', 'GAME_ID'], how='left')
+    return df.merge(opp, on=['OPP_TEAM_ID', 'GAME_ID'], how='left')
 
 
 def add_player_features(df):
@@ -108,6 +188,13 @@ def add_player_features(df):
     for c in TARGETS:
         df[f'{c}_H2H_DIFF'] = df[f'{c}_H2H'] - df[f'{c}_EWM30']
 
+    # Teammates out tonight compared to how many were out over the player's last 10 games.
+    # His recent averages already reflect those earlier absences, so the change is what matters.
+    prev_out = by_player[OUT_RECENT].shift(1).groupby(df['PLAYER_ID'])
+    recent_out = prev_out.rolling(10, min_periods=1).mean().reset_index(level=0, drop=True).sort_index()
+    for c in OUT_RECENT:
+        df[f'{c}_DIFF'] = df[c] - recent_out[c].values
+
     return df
 
 
@@ -124,7 +211,9 @@ def build_features(players, teams):
     """Full feature table: one row per player-game, ready for training."""
     stats = team_game_stats(teams)
     form = team_form(stats)
-    df = add_player_features(prepare_players(players, stats))
+    out = absences(players, team_schedule(teams))
+    df = attach_absences(prepare_players(players, stats), out)
+    df = add_player_features(df)
     df = attach_team_form(df, form, 'OPP_TEAM_ID', 'OPP_')
     df = attach_team_form(df, form, 'TEAM_ID', 'TEAM_')
     return df.sort_values(['GAME_DATE', 'GAME_ID', 'PLAYER_ID']).reset_index(drop=True)
@@ -139,6 +228,8 @@ FEATURES = (
     + [f'{c}_H2H_DIFF' for c in TARGETS]
     + ['OPP_' + c for c in TEAM_STATS]
     + ['TEAM_' + c for c in TEAM_STATS]
+    + ['TEAM_' + c for c in OUT_COLS] + [f'{c}_DIFF' for c in OUT_RECENT]
+    + ['OPP_' + c for c in OUT_COLS]
 )
 
 
@@ -159,8 +250,19 @@ def find_player(players, name):
     return matches.iloc[0]
 
 
-def upcoming_features(players, teams, player_name, opponent, home, game_date=None, playoffs=False):
-    """Features for a game that hasn't been played yet, built from all games before it."""
+def name_key(name):
+    """Looser name match for other sources: also drops punctuation and Jr./III suffixes."""
+    words = re.sub(r'[^a-z ]', '', _simplify(name).replace('-', ' ')).split()
+    return ' '.join(w for w in words if w not in {'jr', 'sr', 'ii', 'iii', 'iv'})
+
+
+def upcoming_features(players, teams, player_name, opponent, home, game_date=None, playoffs=False,
+                      out_names=()):
+    """Features for a game that hasn't been played yet, built from all games before it.
+
+    out_names: players who won't play in this game (from the injury report or typed in).
+    Returns (row, rotations): the feature row, and both teams' rotation players with an OUT flag.
+    """
     player = find_player(players, player_name)
     history = players[players['PLAYER_ID'] == player['PLAYER_ID']].sort_values('GAME_DATE')
     last = history.iloc[-1]
@@ -169,27 +271,50 @@ def upcoming_features(players, teams, player_name, opponent, home, game_date=Non
     opponent = opponent.upper()
     if opponent not in team_ids:
         raise ValueError(f'Unknown team "{opponent}". Use an abbreviation like {", ".join(team_ids.index[:5])}')
+    team_id, opp_id = last['TEAM_ID'], team_ids[opponent]
 
     game_date = pd.Timestamp(game_date) if game_date else pd.Timestamp.today().normalize()
     season_year = last['SEASON_YEAR']  # assumes the game is in the player's latest season
 
-    upcoming = {c: np.nan for c in history.columns}
-    upcoming.update({
-        'SEASON_YEAR': season_year, 'PLAYER_ID': player['PLAYER_ID'], 'PLAYER_NAME': player['PLAYER_NAME'],
-        'TEAM_ID': last['TEAM_ID'], 'TEAM_ABBREVIATION': last['TEAM_ABBREVIATION'], 'GAME_ID': 'UPCOMING',
-        'GAME_DATE': game_date, 'MATCHUP': f"{last['TEAM_ABBREVIATION']} {'vs.' if home else '@'} {opponent}",
-        'SEASON_TYPE': 'Playoffs' if playoffs else 'Regular Season',
-    })
-
     stats = team_game_stats(teams)
     form = team_form(stats)
+    schedule = team_schedule(teams)
+
+    # Players out in each of this player's past games, for his team and the opponent
     df = prepare_players(history, stats)
-    upcoming = pd.DataFrame([upcoming])
-    upcoming['HOME'] = int(home)
-    upcoming['PLAYOFFS'] = int(playoffs)
-    upcoming['OPP_TEAM_ID'] = team_ids[opponent]
+    past = pd.concat([df[['TEAM_ID', 'GAME_ID']],
+                      df[['OPP_TEAM_ID', 'GAME_ID']].rename(columns={'OPP_TEAM_ID': 'TEAM_ID'})])
+    past_targets = schedule.merge(past.drop_duplicates(), on=['TEAM_ID', 'GAME_ID'])
+    df = attach_absences(df, absences(players, schedule, past_targets))
+
+    # The upcoming game is each team's next game of its latest season
+    next_games = []
+    for tid in (team_id, opp_id):
+        s = schedule[schedule['TEAM_ID'] == tid]
+        s = s[s['SEASON_YEAR'] == s['SEASON_YEAR'].max()]
+        next_games.append({'TEAM_ID': tid, 'SEASON_YEAR': s['SEASON_YEAR'].iloc[0],
+                           'TEAM_GAME_NO': s['TEAM_GAME_NO'].max() + 1,
+                           'GAME_ID': 'UPCOMING', 'GAME_DATE': game_date})
+    next_games = pd.DataFrame(next_games)
+    rotations = rotation_players(players, schedule, next_games)
+    out_keys = {name_key(n) for n in out_names}
+    rotations['OUT'] = (rotations['PLAYER_NAME'].map(name_key).isin(out_keys)
+                        & (rotations['PLAYER_ID'] != player['PLAYER_ID']))
+    abbreviations = {team_id: last['TEAM_ABBREVIATION'], opp_id: opponent}
+    rotations['TEAM_ABBREVIATION'] = rotations['TEAM_ID'].map(abbreviations)
+
+    upcoming = {c: np.nan for c in df.columns if c not in OUT_COLS and not c.endswith(tuple(OUT_COLS))}
+    upcoming.update({
+        'SEASON_YEAR': season_year, 'PLAYER_ID': player['PLAYER_ID'], 'PLAYER_NAME': player['PLAYER_NAME'],
+        'TEAM_ID': team_id, 'TEAM_ABBREVIATION': last['TEAM_ABBREVIATION'], 'GAME_ID': 'UPCOMING',
+        'GAME_DATE': game_date, 'MATCHUP': f"{last['TEAM_ABBREVIATION']} {'vs.' if home else '@'} {opponent}",
+        'SEASON_TYPE': 'Playoffs' if playoffs else 'Regular Season',
+        'HOME': int(home), 'PLAYOFFS': int(playoffs), 'OPP_TEAM_ID': opp_id,
+    })
+    upcoming = attach_absences(pd.DataFrame([upcoming]), summarize_out(rotations[rotations['OUT']], next_games))
+
     df = add_player_features(pd.concat([df, upcoming], ignore_index=True))
     row = df[df['GAME_ID'] == 'UPCOMING']
     row = attach_team_form(row, form, 'OPP_TEAM_ID', 'OPP_')
     row = attach_team_form(row, form, 'TEAM_ID', 'TEAM_')
-    return row
+    return row, rotations.sort_values(['TEAM_ID', 'MIN'], ascending=[True, False])

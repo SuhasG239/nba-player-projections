@@ -2,7 +2,8 @@
 
 Projects a player's **points, rebounds, and assists** for an upcoming game from their
 recent form, advanced stats, head-to-head history against the opponent, the opponent's
-recent defense, and game context (home/away, rest, playoffs).
+recent defense, game context (home/away, rest, playoffs), and which players are out
+for either team (injuries, rest).
 
 Data comes free from the NBA stats API via [`nba_api`](https://github.com/swar/nba_api):
 every player and team game log, basic and advanced, from 2015-16 to now
@@ -17,17 +18,34 @@ player-games it never saw). Mean absolute error, lower is better:
 |---|---|---|---|
 | Season average | 4.71 | 1.93 | 1.37 |
 | Last 10 games average | 4.68 | 1.94 | 1.37 |
-| **Gradient boosting model** | **4.54** | **1.88** | **1.33** |
+| Model without players out | 4.54 | 1.88 | 1.33 |
+| **Gradient boosting model** | **4.45** | **1.85** | **1.32** |
 
-The model's average miss is about 3% smaller than a last-10-game average for all three
-stats. Single games are noisy (a player's points can swing 10+ from night to night),
+The model's average miss is about 5% smaller than a last-10-game average for points
+and 4% for rebounds and assists. Single games are noisy (a player's points can swing 10+ from night to night),
 so no model gets close to zero error.
 
 What drives the projections (permutation importance, points model): recent form and
-the player's own advanced stats do almost all of the work. Game context (rest,
-back-to-backs) comes next. The opponent's defense and head-to-head history add a
+the player's own advanced stats do almost all of the work. Players out comes next: when
+teammates who usually score 20+ more points than in the player's last 10 games are out,
+he scores about 2 more points than his last-10 average. Game context (rest,
+back-to-backs) follows. The opponent's defense and head-to-head history add a
 small amount; past games against a specific team turn out to say little beyond the
 player's overall level.
+
+## Players out
+
+The NBA game logs only list players who played. A player counts as out for a game when
+he played for the team in at least 2 of its previous 10 games that season (and not for
+another team since) but isn't in the box score. Each missing player adds his recent
+minutes, points, rebounds, assists and shots to his team's "out" totals. Those totals
+feed the model for both the player's team and the opponent.
+
+For upcoming games, `project.py` reads the current
+[ESPN injury report](https://www.espn.com/nba/injuries) (free, no key). Players listed
+**Out** are treated as out. **Day-To-Day** players are treated as playing unless you
+pass `--gtd-out`. The report reflects the latest news, so it's accurate for each team's
+next game, not games further out.
 
 ## Files
 
@@ -38,7 +56,8 @@ player's overall level.
 - `player_projections.ipynb`: baselines, training, evaluation, feature importance, and
   the final models.
 - `projection_models.joblib`: the saved models (one per stat).
-- `project.py`: projects a player for an upcoming game.
+- `injuries.py`: downloads the current ESPN injury report (`python injuries.py NYK BOS`).
+- `project.py`: projects a player for an upcoming game, using the injury report.
 - `NBA data scraping.ipynb`: scoring leaders 2017-2024 (`NBA_points_leaders_2017-2024.xlsx`).
 - `get_data.ipynb`: an earlier basketball-reference scraper, replaced by `collect_data.py`.
 
@@ -55,16 +74,28 @@ Project a game (team abbreviations like `BOS`, `LAL`, `NYK`; `--home` if the pla
 team is at home, `--date` defaults to today):
 
 ```bash
-python project.py "Jalen Brunson" BOS --home --date 2026-11-06
+python project.py "Nikola Jokic" MIN
 ```
 
 ```
-Jalen Brunson  NYK vs. BOS  (2026-11-06)
+Nikola Jokić  DEN @ MIN  (2026-11-05)
         Projected  Last 10  Season  vs. opp
-PTS          24.8     28.5    24.6     22.1
-REB           3.0      3.2     2.7      3.0
-AST           5.9      5.2     5.3      5.6
-Head-to-head games since 2015-16: 31
+PTS          22.4     23.8    22.0     25.3
+REB          11.0     10.9     9.7     11.2
+AST           8.5      9.2     9.0      7.7
+Head-to-head games since 2015-16: 60
+DEN out: nobody
+DEN day-to-day (counted as playing): DeMar DeRozan
+MIN out: Anthony Edwards (34 min)
+MIN day-to-day (counted as playing): Terrence Shannon Jr
+```
+
+Override the report for any player on either team:
+
+```bash
+python project.py "Nikola Jokic" MIN --out "Jamal Murray"          # Jokić projects 24.2 PTS instead of 22.4
+python project.py "Jalen Brunson" BOS --home --gtd-out --playing "Josh Hart"
+python project.py "Jalen Brunson" BOS --home --no-report            # ignore the injury report
 ```
 
 To retrain, register the kernel and run the notebook:
@@ -77,7 +108,9 @@ Then open `player_projections.ipynb`, pick "Python (NBA Projections)", and run a
 
 ## Limitations
 
-- Doesn't know about injuries, rest days announced in advance, or teammates being out,
-  which change minutes and usage the most.
+- Players out are inferred from box scores, so the model can't tell an injury from a
+  coach's decision, and a player who's been out more than 10 games no longer counts.
+- The injury report is only as current as ESPN's feed; check it close to tip-off.
+  Late scratches and minutes limits aren't captured.
 - A player who just changed teams is projected from their history with the old team.
 - The NBA stats API is free but unofficial; if it changes, update `nba_api`.
