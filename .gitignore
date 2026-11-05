@@ -1,0 +1,12 @@
+# Game logs (~117 MB); rebuild with: python collect_data.py
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Secrets
+.env

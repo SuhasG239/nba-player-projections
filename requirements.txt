@@ -1,0 +1,12 @@
+# Data collection (collect_data.py)
+nba_api
+pandas
+
+# Notebooks and modeling
+numpy
+matplotlib
+seaborn
+# projection_models.joblib was saved with this version; other versions may fail to load it
+scikit-learn==1.9.1
+openpyxl
+jupyter
