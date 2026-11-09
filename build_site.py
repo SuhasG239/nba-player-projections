@@ -26,13 +26,25 @@ ESPN_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/
 OUTPUT = os.path.join('docs', 'data', 'projections.json')
 
 
+def game_status(espn_status):
+    """'scheduled', 'live' or 'final'; None for postponed or canceled games."""
+    if espn_status == 'STATUS_SCHEDULED':
+        return 'scheduled'
+    if espn_status == 'STATUS_FINAL':
+        return 'final'
+    if espn_status in ('STATUS_POSTPONED', 'STATUS_CANCELED', 'STATUS_SUSPENDED', 'STATUS_DELAYED'):
+        return None
+    return 'live'   # in progress, halftime, end of period
+
+
 def fetch_games(day):
-    """Games on one date (US Eastern) that haven't started yet."""
+    """All games on one date (US Eastern), with their status."""
     response = requests.get(ESPN_SCOREBOARD, params={'dates': day.strftime('%Y%m%d')}, timeout=30)
     response.raise_for_status()
     games = []
     for event in response.json().get('events', []):
-        if event['status']['type']['name'] != 'STATUS_SCHEDULED':
+        status = game_status(event['status']['type']['name'])
+        if status is None:
             continue
         competition = event['competitions'][0]
         side = {}
@@ -42,7 +54,7 @@ def fetch_games(day):
                                       'name': team['team']['displayName'],
                                       'short': team['team'].get('shortDisplayName') or team['team']['displayName']}
         games.append({'id': event['id'], 'date': day.isoformat(), 'tipoff_utc': event['date'],
-                      'home': side['home'], 'away': side['away']})
+                      'status': status, 'home': side['home'], 'away': side['away']})
     return games
 
 
@@ -86,15 +98,27 @@ def main():
     for offset in range(args.days):
         day = today + timedelta(days=offset)
         games = [g for g in fetch_games(day) if g['home']['abbr'] in team_ids and g['away']['abbr'] in team_ids]
+        if offset > 0:
+            games = [g for g in games if g['status'] == 'scheduled']
         if not games:
             continue
+
+        # Project from games before this date only, so a game that has already finished
+        # (and is in the logs) doesn't leak its own result into its projection
+        before = pd.Timestamp(day)
+        day_players, day_teams, day_history = players, teams, history
+        if (players['GAME_DATE'] >= before).any():
+            day_players = players[players['GAME_DATE'] < before]
+            day_teams = teams[teams['GAME_DATE'] < before]
+            day_history = history[history['GAME_DATE'] < before]
+        actual = players[players['GAME_DATE'] == before].set_index('PLAYER_ID')
         table = pd.DataFrame({
             'GAME_ID': [g['id'] for g in games],
             'GAME_DATE': pd.Timestamp(day),
             'HOME_TEAM_ID': [team_ids[g['home']['abbr']] for g in games],
             'AWAY_TEAM_ID': [team_ids[g['away']['abbr']] for g in games],
         })
-        rows, rotations = upcoming_batch(players, teams, history, table, out_names)
+        rows, rotations = upcoming_batch(day_players, day_teams, day_history, table, out_names)
         for t in TARGETS:
             rows[f'{t}_PROJ'] = saved['models'][t].predict(rows[saved['features']])
 
@@ -107,7 +131,15 @@ def main():
                 listed = []
                 for r in team_rows.sort_values('PTS_PROJ', ascending=False).itertuples():
                     info = statuses.get(name_key(r.PLAYER_NAME), {})
+                    # Box score for finished games: the projection next to what happened
+                    result = None
+                    if game['status'] == 'final' and r.PLAYER_ID in actual.index:
+                        box = actual.loc[[r.PLAYER_ID]].iloc[0]
+                        result = {t: int(box[t]) for t in TARGETS} | {'min': rounded(box['MIN'], 0)}
+                    elif game['status'] == 'final':
+                        result = {'dnp': True}
                     listed.append({
+                        'actual': result,
                         'id': int(r.PLAYER_ID), 'name': r.PLAYER_NAME,
                         'proj': {t: rounded(getattr(r, f'{t}_PROJ')) for t in TARGETS},
                         'last10': {t: rounded(getattr(r, f'{t}_L10')) for t in TARGETS},
@@ -117,7 +149,7 @@ def main():
                         'min_last10': rounded(r.MIN_L10),
                         'rest_days': rounded(r.REST_DAYS, 0),
                         'status': info.get('status'), 'note': info.get('note'),
-                        'recent': recent_games(players, r.PLAYER_ID),
+                        'recent': recent_games(day_players, r.PLAYER_ID),
                     })
                 out = [{'id': int(r.PLAYER_ID), 'name': r.PLAYER_NAME, 'min': rounded(r.MIN),
                         'note': statuses.get(name_key(r.PLAYER_NAME), {}).get('note')}

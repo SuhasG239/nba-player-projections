@@ -33,6 +33,15 @@ function dayLabel(iso) {
 function tipoff(game) {
   return new Date(game.tipoff_utc).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
+function statusPill(game) {
+  if (game.status === 'live') return '<span class="pill live">● Live</span>';
+  if (game.status === 'final') return '<span class="pill final">Final</span>';
+  return '';
+}
+function withinMiss(p) {
+  // How many of a player's three stats landed within the typical miss
+  return STATS.filter((s) => Math.abs(p.actual[s] - p.proj[s]) <= state.data.typical_miss[s]).length;
+}
 function timeAgo(iso) {
   const minutes = Math.round((Date.now() - new Date(iso)) / 60000);
   if (minutes < 60) return `${Math.max(minutes, 1)} min ago`;
@@ -74,7 +83,7 @@ function renderGames() {
       </div>`;
     };
     return `<button class="game-card" data-game="${g.id}" aria-pressed="${g.id === state.gameId}">
-      <div class="time"><span>${tipoff(g)}</span>${outCount ? `<span class="pill out">${outCount} out</span>` : ''}</div>
+      <div class="time"><span>${statusPill(g) || tipoff(g)}</span>${outCount ? `<span class="pill out">${outCount} out</span>` : ''}</div>
       ${row(g.away)}${row(g.home)}
     </button>`;
   }).join('');
@@ -85,10 +94,25 @@ function renderGame() {
   const g = game(state.gameId);
   if (!g) { $('game').hidden = true; return; }
   $('game').hidden = false;
-  $('game-when').textContent = `${dayLabel(g.date)} · ${tipoff(g)}`;
+  const when = { live: 'Live now', final: 'Final' }[g.status] || tipoff(g);
+  $('game-when').textContent = `${dayLabel(g.date)} · ${when}`;
   $('game-title').textContent = `${g.away.name} @ ${g.home.name}`;
   const miss = state.data.typical_miss;
   $('typical-miss').textContent = `Typical miss: ±${miss.PTS} pts, ±${miss.REB} reb, ±${miss.AST} ast`;
+
+  // Started games: projections were made from data before tipoff; finished games get a scorecard
+  let note = '';
+  if (g.status === 'live') {
+    note = 'This game is in progress. Projections were made from games before tipoff.';
+  } else if (g.status === 'final') {
+    const played = [g.away, g.home].flatMap((s) => g.teams[s.abbr].players).filter((p) => p.actual && !p.actual.dnp);
+    const hits = played.reduce((n, p) => n + withinMiss(p), 0);
+    note = played.length
+      ? `Final. ${hits} of ${played.length * 3} projected stats (${Math.round((100 * hits) / (played.length * 3))}%) landed within the typical miss. Actual numbers are under each projection.`
+      : 'Final. Box scores will appear after the next data update.';
+  }
+  $('game-note').textContent = note;
+  $('game-note').hidden = !note;
 
   const sides = [g.away, g.home];
   $('team-switch').innerHTML = sides.map((s, i) =>
@@ -111,9 +135,17 @@ function teamPanel(g, side, home) {
     const chips = [];
     if (p.status === 'Day-To-Day') chips.push('<span class="pill gtd">Questionable</span>');
     if (p.rest_days === 1) chips.push('<span class="pill b2b">Back-to-back</span>');
+    if (p.actual?.dnp) chips.push('<span class="pill b2b">Did not play</span>');
+    const under = (s) => {
+      if (p.actual && !p.actual.dnp) {
+        const close = Math.abs(p.actual[s] - p.proj[s]) <= state.data.typical_miss[s];
+        return `<span class="delta ${close ? 'up' : 'flat'}">Actual ${p.actual[s]}</span>`;
+      }
+      return p.actual?.dnp ? '<span class="delta flat">–</span>' : delta(p.proj[s], p.last10[s]);
+    };
     return `<tr data-player="${p.id}" data-team="${side.abbr}" tabindex="0">
       <td><span class="pname">${esc(p.name)}</span><span class="psub">${p.min_last10 != null ? `${Math.round(p.min_last10)} min` : ''} ${chips.join('')}</span></td>
-      ${STATS.map((s) => `<td><span class="stat">${fmt(p.proj[s])}</span>${delta(p.proj[s], p.last10[s])}</td>`).join('')}
+      ${STATS.map((s) => `<td><span class="stat">${fmt(p.proj[s])}</span>${under(s)}</td>`).join('')}
     </tr>`;
   }).join('');
 
@@ -172,11 +204,11 @@ function openPlayer(gameId, abbr, playerId) {
 
   $('player-body').innerHTML = `
     <div class="pm-head">${badge(abbr)}<div><h2 id="pm-name">${esc(p.name)}</h2>
-      <p class="pm-sub">${esc(abbr)} ${home ? 'vs.' : '@'} ${esc(opp.abbr)} · ${esc(dayLabel(g.date))} · ${tipoff(g)}</p></div></div>
+      <p class="pm-sub">${esc(abbr)} ${home ? 'vs.' : '@'} ${esc(opp.abbr)} · ${esc(dayLabel(g.date))} · ${({ live: 'Live now', final: 'Final' })[g.status] || tipoff(g)}</p></div></div>
     <div class="pm-stats">${statBlocks}</div>
     <table class="pm-compare">
       <thead><tr><th></th>${STATS.map((s) => `<th>${s}</th>`).join('')}</tr></thead>
-      <tbody>${compare('Projection', p.proj, 'proj')}${compare('Last 10 games', p.last10)}${compare('This season', p.season)}${compare(vsLabel, p.vs_opp)}</tbody>
+      <tbody>${compare('Projection', p.proj, 'proj')}${p.actual && !p.actual.dnp ? compare('Actual (this game)', p.actual) : ''}${compare('Last 10 games', p.last10)}${compare('This season', p.season)}${compare(vsLabel, p.vs_opp)}</tbody>
     </table>
     <div class="pm-section">
       <h3>Last ${p.recent.length} games <span class="chart-tabs">${STATS.map((s) => `<button data-chart="${s}" aria-pressed="${s === state.chartStat}">${s}</button>`).join('')}</span></h3>

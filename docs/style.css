@@ -143,6 +143,9 @@ h1, h2, h3 { line-height: 1.15; margin: 0; }
 .pill.out { background: var(--out-bg); color: var(--out-ink); }
 .pill.gtd { background: var(--warn-bg); color: var(--warn-ink); }
 .pill.b2b { background: var(--surface-2); color: var(--ink-2); }
+.pill.live { background: var(--out-bg); color: var(--down); }
+.pill.final { background: var(--surface-2); color: var(--ink-2); }
+.game-note { margin: -6px 0 16px; padding: 10px 14px; border-radius: 10px; background: var(--surface-2); color: var(--ink-2); font-size: 14px; }
 .empty-state { padding: 32px; text-align: center; color: var(--ink-3); background: var(--surface); border: 1px dashed var(--line); border-radius: var(--radius); }
 
 /* Game detail */
