@@ -1,5 +1,5 @@
 # Game logs (~117 MB); rebuild with: python collect_data.py
-data/
+/data/
 
 # Python
 __pycache__/
