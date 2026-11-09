@@ -250,6 +250,61 @@ def find_player(players, name):
     return matches.iloc[0]
 
 
+def history_table(players, teams):
+    """Every past player-game with players-out totals attached (the input to upcoming_batch)."""
+    stats = team_game_stats(teams)
+    return attach_absences(prepare_players(players, stats), absences(players, team_schedule(teams)))
+
+
+def upcoming_batch(players, teams, history, games, out_names=()):
+    """Feature rows for every rotation player in a set of unplayed games, in one pass.
+
+    games: GAME_ID, GAME_DATE, HOME_TEAM_ID, AWAY_TEAM_ID (all on one date, each team once).
+    history: the result of history_table(). out_names: players who won't play.
+    Returns (rows, rotations): one feature row per available player, and every rotation
+    player with an OUT flag.
+    """
+    games = games.assign(GAME_DATE=pd.to_datetime(games['GAME_DATE']).astype(players['GAME_DATE'].dtype))
+    form = team_form(team_game_stats(teams))
+    schedule = team_schedule(teams)
+    latest = schedule.groupby('TEAM_ID')['SEASON_YEAR'].max()
+    current = schedule[schedule['SEASON_YEAR'] == schedule['TEAM_ID'].map(latest)]
+    next_no = current.groupby('TEAM_ID')['TEAM_GAME_NO'].max() + 1
+    abbreviations = schedule.drop_duplicates('TEAM_ID', keep='last').set_index('TEAM_ID')['TEAM_ABBREVIATION']
+
+    # One row per team per game
+    sides = pd.concat([
+        games.assign(TEAM_ID=games['HOME_TEAM_ID'], OPP_TEAM_ID=games['AWAY_TEAM_ID'], HOME=1),
+        games.assign(TEAM_ID=games['AWAY_TEAM_ID'], OPP_TEAM_ID=games['HOME_TEAM_ID'], HOME=0),
+    ], ignore_index=True)
+    sides['SEASON_YEAR'] = sides['TEAM_ID'].map(latest)
+    sides['TEAM_GAME_NO'] = sides['TEAM_ID'].map(next_no)
+
+    rotations = rotation_players(players, schedule, sides)
+    out_keys = {name_key(n) for n in out_names}
+    rotations['OUT'] = rotations['PLAYER_NAME'].map(name_key).isin(out_keys)
+    rotations['TEAM_ABBREVIATION'] = rotations['TEAM_ID'].map(abbreviations)
+    out_totals = summarize_out(rotations[rotations['OUT']], sides)
+
+    upcoming = rotations.loc[~rotations['OUT'], ['PLAYER_ID', 'PLAYER_NAME', 'TEAM_ID', 'GAME_ID', 'GAME_DATE']]
+    upcoming = upcoming.merge(sides[['TEAM_ID', 'GAME_ID', 'OPP_TEAM_ID', 'HOME', 'SEASON_YEAR']],
+                              on=['TEAM_ID', 'GAME_ID'])
+    upcoming['TEAM_ABBREVIATION'] = upcoming['TEAM_ID'].map(abbreviations)
+    upcoming['MATCHUP'] = (upcoming['TEAM_ABBREVIATION'] + np.where(upcoming['HOME'] == 1, ' vs. ', ' @ ')
+                           + upcoming['OPP_TEAM_ID'].map(abbreviations))
+    upcoming['SEASON_TYPE'] = 'Regular Season'
+    upcoming['PLAYOFFS'] = 0
+    upcoming = attach_absences(upcoming, out_totals)
+
+    # Only the history of these players is needed
+    past = history[history['PLAYER_ID'].isin(upcoming['PLAYER_ID'])]
+    df = add_player_features(pd.concat([past, upcoming], ignore_index=True))
+    rows = df[df['GAME_ID'].isin(set(games['GAME_ID']))]
+    rows = attach_team_form(rows, form, 'OPP_TEAM_ID', 'OPP_')
+    rows = attach_team_form(rows, form, 'TEAM_ID', 'TEAM_')
+    return rows.reset_index(drop=True), rotations
+
+
 def name_key(name):
     """Looser name match for other sources: also drops punctuation and Jr./III suffixes."""
     words = re.sub(r'[^a-z ]', '', _simplify(name).replace('-', ' ')).split()

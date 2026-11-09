@@ -5,6 +5,10 @@ recent form, advanced stats, head-to-head history against the opponent, the oppo
 recent defense, game context (home/away, rest, playoffs), and which players are out
 for either team (injuries, rest).
 
+**Live site: https://suhasg239.github.io/nba-player-projections/**. Pick an upcoming game to see
+a projection for every rotation player on both teams, with injured players listed. Tap a player for
+recent games, averages, and the context behind the number.
+
 Data comes free from the NBA stats API via [`nba_api`](https://github.com/swar/nba_api):
 every player and team game log, basic and advanced, from 2015-16 to now
 (about 303,000 player-games).
@@ -56,6 +60,9 @@ next game, not games further out.
 - `player_projections.ipynb`: baselines, training, evaluation, feature importance, and
   the final models.
 - `projection_models.joblib`: the saved models (one per stat).
+- `build_site.py`: refreshes the game logs and writes the website's data (`docs/data/projections.json`)
+  for the next few days of games.
+- `docs/`: the website (plain HTML, CSS and JavaScript), served by GitHub Pages.
 - `injuries.py`: downloads the current ESPN injury report (`python injuries.py NYK BOS`).
 - `project.py`: projects a player for an upcoming game, using the injury report.
 - `NBA data scraping.ipynb`: scoring leaders 2017-2024 (`NBA_points_leaders_2017-2024.xlsx`).
@@ -97,6 +104,22 @@ python project.py "Nikola Jokic" MIN --out "Jamal Murray"          # Jokić proj
 python project.py "Jalen Brunson" BOS --home --gtd-out --playing "Josh Hart"
 python project.py "Jalen Brunson" BOS --home --no-report            # ignore the injury report
 ```
+
+## Update the website
+
+The NBA stats API blocks cloud servers, so the site's data is built on your own computer:
+
+```bash
+python build_site.py          # refreshes game logs, projects the next 3 days of games
+git add docs/data
+git commit -m "Update projections"
+git push
+```
+
+GitHub Pages republishes within a minute or two. Run it on game days, ideally close to the first
+tipoff so the injury report is current. To preview locally: `python -m http.server --directory docs`.
+
+## Retrain
 
 To retrain, register the kernel and run the notebook:
 

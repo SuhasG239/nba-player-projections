@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NBA Player Projections</title>
+  <meta name="description" content="Projected points, rebounds and assists for every rotation player in upcoming NBA games, accounting for recent form, matchups, rest and injuries.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23f2711c'/%3E%3Cpath d='M2 16h28M16 2v28M6 6c5 4 5 16 0 20M26 6c-5 4-5 16 0 20' stroke='%23231a14' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="#">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14"/><path d="M2 16h28M16 2v28M6 6c5 4 5 16 0 20M26 6c-5 4-5 16 0 20"/></svg>
+        <span>NBA Player Projections</span>
+      </a>
+      <nav class="topnav">
+        <a href="#games">Games</a>
+        <a href="#how">How it works</a>
+        <a href="https://github.com/SuhasG239/nba-player-projections" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="wrap">
+        <p class="eyebrow" id="updated">Loading the latest projections…</p>
+        <h1>Points, rebounds &amp; assists for every player in upcoming games</h1>
+        <p class="lede">A machine learning model projects each rotation player's stat line from recent form,
+          the matchup, rest, and who's injured on both teams.</p>
+
+        <div class="search" role="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <input id="search" type="search" placeholder="Search a player, e.g. Jalen Brunson" autocomplete="off"
+                 aria-label="Search a player" aria-controls="search-results" aria-expanded="false">
+          <ul id="search-results" class="search-results" role="listbox" hidden></ul>
+        </div>
+
+        <ol class="steps">
+          <li><span>1</span><div><strong>Pick a game</strong>Choose a day, then a matchup.</div></li>
+          <li><span>2</span><div><strong>Compare players</strong>Big number = projection; the arrow shows the change from the player's last 10 games.</div></li>
+          <li><span>3</span><div><strong>Tap a player</strong>See recent games, averages, and what's behind the number.</div></li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="games" class="wrap games-section">
+      <div class="section-head">
+        <h2>Upcoming games</h2>
+        <div id="days" class="days" role="tablist" aria-label="Game day"></div>
+      </div>
+      <div id="game-grid" class="game-grid"></div>
+    </section>
+
+    <section id="game" class="wrap game-detail" hidden>
+      <div class="game-head">
+        <div>
+          <p class="eyebrow" id="game-when"></p>
+          <h2 id="game-title"></h2>
+        </div>
+        <div class="team-switch" id="team-switch" role="tablist" aria-label="Team"></div>
+      </div>
+      <p class="legend">
+        <span><b>24.8</b> projection</span>
+        <span><i class="up">▲ 1.2</i> vs. last 10 games</span>
+        <span id="typical-miss"></span>
+      </p>
+      <div class="teams" id="teams"></div>
+    </section>
+
+    <section id="how" class="how">
+      <div class="wrap">
+        <h2>How it works</h2>
+        <div class="how-grid">
+          <div class="how-card">
+            <h3>What goes in</h3>
+            <ul>
+              <li><b>Recent form:</b> last 5 and 10 games, season averages, and advanced stats like usage rate and true shooting.</li>
+              <li><b>Players out:</b> the minutes, points and shots of injured teammates and opponents, from the ESPN injury report.</li>
+              <li><b>Matchup:</b> the opponent's pace and defense over its last 10 games, and the player's history against that team.</li>
+              <li><b>Context:</b> home or away, days of rest, back-to-backs.</li>
+            </ul>
+          </div>
+          <div class="how-card">
+            <h3>How accurate it is</h3>
+            <p>Trained on every game from 2015-16 to 2024-25, then tested on all 28,062 player-games of 2025-26. Average miss per game (lower is better):</p>
+            <table class="acc">
+              <thead><tr><th></th><th>PTS</th><th>REB</th><th>AST</th></tr></thead>
+              <tbody>
+                <tr><td>Season average</td><td>4.71</td><td>1.93</td><td>1.37</td></tr>
+                <tr><td>Last 10 games</td><td>4.68</td><td>1.94</td><td>1.37</td></tr>
+                <tr class="best"><td>This model</td><td>4.45</td><td>1.85</td><td>1.32</td></tr>
+              </tbody>
+            </table>
+            <p class="small">Single games are noisy: a 25-point scorer often scores 15 or 35. The model beats the usual averages, but no projection is a guarantee.</p>
+          </div>
+          <div class="how-card">
+            <h3>What it doesn't know</h3>
+            <ul>
+              <li>Late scratches and minutes limits announced after the update.</li>
+              <li>Day-to-day players are assumed to play.</li>
+              <li>Coaching decisions, blowouts, and foul trouble.</li>
+            </ul>
+            <p class="small">Projections are for learning and fun, not betting advice.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <p>Built by <b>Suhas Kumar Gullapelli</b> · Data Science, University of Central Florida</p>
+      <p>
+        <a href="https://github.com/SuhasG239/nba-player-projections" target="_blank" rel="noopener">Code on GitHub</a> ·
+        <a href="https://www.linkedin.com/in/suhas-kumar-gullapelli-bb786b3b5" target="_blank" rel="noopener">LinkedIn</a>
+      </p>
+      <p class="small">Game logs from the NBA stats API, schedule and injury report from ESPN. Not affiliated with the NBA.</p>
+    </div>
+  </footer>
+
+  <div class="modal" id="player-modal" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="pm-name">
+      <button class="modal-close" data-close aria-label="Close">×</button>
+      <div id="player-body"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
